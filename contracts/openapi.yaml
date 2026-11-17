@@ -1,0 +1,535 @@
+openapi: 3.0.3
+info:
+  title: Smart Healthcare — REST Portal API
+  version: 1.0.0
+  description: |
+    Patient-facing REST API for the Smart Healthcare platform.
+
+    Base URL: `http://localhost:8002` (paths are prefixed with `/api/v1`).
+    Errors are returned as `{ "error": "<CODE>", "details": ["..."] }`.
+
+    > `GET /health` is mounted on the server root, not under `/api/v1`.
+servers:
+  - url: http://localhost:8002
+    description: Local development
+
+tags:
+  - name: Patients
+  - name: Scheduling
+  - name: Prescriptions
+  - name: Emergency
+  - name: System
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      operationId: getHealth
+      summary: Liveness probe
+      responses:
+        '200':
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/patients/{id}:
+    parameters:
+      - $ref: '#/components/parameters/PatientId'
+    get:
+      tags: [Patients]
+      operationId: getPatient
+      summary: Get a patient by id
+      responses:
+        '200':
+          description: Patient record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patient'
+        '404':
+          $ref: '#/components/responses/PatientNotFound'
+    patch:
+      tags: [Patients]
+      operationId: updatePatientContact
+      summary: Update patient contact details
+      description: |
+        Only `phone`, `email` and `address` are accepted; any other field in the
+        body is silently ignored. `id` and `name` are immutable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatientContactPatch'
+            example:
+              phone: '+33 6 12 34 56 78'
+              email: alice.martin@example.com
+      responses:
+        '200':
+          description: Updated patient record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Patient'
+        '404':
+          $ref: '#/components/responses/PatientNotFound'
+
+  /api/v1/patients/{id}/prescriptions:
+    parameters:
+      - $ref: '#/components/parameters/PatientId'
+    get:
+      tags: [Prescriptions]
+      operationId: listPatientPrescriptions
+      summary: List prescriptions for a patient
+      responses:
+        '200':
+          description: Prescriptions belonging to the patient (empty array if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Prescription'
+
+  /api/v1/slots:
+    get:
+      tags: [Scheduling]
+      operationId: listFreeSlots
+      summary: List available appointment slots
+      description: Returns only slots where `free` is `true`.
+      parameters:
+        - name: doctorId
+          in: query
+          description: Filter by doctor.
+          schema:
+            type: string
+        - name: date
+          in: query
+          description: Filter by day; matched as a prefix of the slot start time (`YYYY-MM-DD`).
+          schema:
+            type: string
+            format: date
+            example: '2026-11-20'
+      responses:
+        '200':
+          description: Matching free slots
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Slot'
+
+  /api/v1/appointments:
+    get:
+      tags: [Scheduling]
+      operationId: listAppointments
+      summary: List appointments
+      parameters:
+        - name: patientId
+          in: query
+          description: Filter by patient.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching appointments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Appointment'
+    post:
+      tags: [Scheduling]
+      operationId: createAppointment
+      summary: Book an appointment
+      description: |
+        For `type: STANDARD`, `slotId` must reference a free slot.
+        For `type: URGENCE`, `slotId` is ignored and the first free emergency
+        slot is allocated automatically; the response reports the chosen slot.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppointmentCreate'
+            examples:
+              standard:
+                value:
+                  patientId: p-001
+                  slotId: s-123
+                  type: STANDARD
+                  reason: Annual check-up
+              emergency:
+                value:
+                  patientId: p-001
+                  type: URGENCE
+                  reason: Chest pain
+      responses:
+        '201':
+          description: Appointment confirmed
+          headers:
+            Location:
+              description: URL of the created appointment.
+              schema:
+                type: string
+                example: /api/v1/appointments/9f1c2c0e-4d3a-4b1e-9a55-1f0b7f2b7a11
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '404':
+          description: '`PATIENT_NOT_FOUND` or `SLOT_NOT_FOUND`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                patient:
+                  value: { error: PATIENT_NOT_FOUND }
+                slot:
+                  value: { error: SLOT_NOT_FOUND }
+        '409':
+          description: The requested slot is no longer free (`SLOT_TAKEN`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: SLOT_TAKEN
+
+  /api/v1/appointments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AppointmentId'
+    get:
+      tags: [Scheduling]
+      operationId: getAppointment
+      summary: Get an appointment by id
+      description: Planned — see the TODO comment in `rest-portal/src/index.js`; not yet implemented.
+      responses:
+        '200':
+          description: Appointment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '404':
+          $ref: '#/components/responses/AppointmentNotFound'
+    put:
+      tags: [Scheduling]
+      operationId: rescheduleAppointment
+      summary: Re-schedule an appointment onto another slot
+      description: Planned — see the TODO comment in `rest-portal/src/index.js`; not yet implemented.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slotId]
+              properties:
+                slotId:
+                  type: string
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Rescheduled appointment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Appointment'
+        '404':
+          description: '`APPOINTMENT_NOT_FOUND` or `SLOT_NOT_FOUND`'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Target slot is taken (`SLOT_TAKEN`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      tags: [Scheduling]
+      operationId: cancelAppointment
+      summary: Cancel an appointment
+      description: Removes the appointment and releases its slot back to the pool.
+      responses:
+        '204':
+          description: Appointment cancelled
+        '404':
+          $ref: '#/components/responses/AppointmentNotFound'
+
+  /api/v1/ambulance-dispatches:
+    post:
+      tags: [Emergency]
+      operationId: createAmbulanceDispatch
+      summary: Request an ambulance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AmbulanceDispatchCreate'
+            example:
+              patientId: p-001
+              location:
+                address: 12 Rue de la Paix, Paris
+                latitude: 48.8698
+                longitude: 2.3311
+              priority: HIGH
+      responses:
+        '201':
+          description: Dispatch created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AmbulanceDispatch'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+
+components:
+  parameters:
+    PatientId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        example: p-001
+    AppointmentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    ValidationError:
+      description: Invalid request body (`VALIDATION`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: VALIDATION
+            details: [patientId is required]
+    PatientNotFound:
+      description: No patient with that id (`PATIENT_NOT_FOUND`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: PATIENT_NOT_FOUND
+    AppointmentNotFound:
+      description: No appointment with that id (`APPOINTMENT_NOT_FOUND`)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: APPOINTMENT_NOT_FOUND
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          description: Machine-readable error code.
+          enum:
+            - VALIDATION
+            - PATIENT_NOT_FOUND
+            - SLOT_NOT_FOUND
+            - SLOT_TAKEN
+            - APPOINTMENT_NOT_FOUND
+        details:
+          type: array
+          description: Human-readable validation messages.
+          items:
+            type: string
+
+    Patient:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          example: p-001
+        name:
+          type: string
+          example: Alice Martin
+        dateOfBirth:
+          type: string
+          format: date
+        phone:
+          type: string
+          example: '+33 6 12 34 56 78'
+        email:
+          type: string
+          format: email
+        address:
+          type: string
+      additionalProperties: true
+
+    PatientContactPatch:
+      type: object
+      description: Only these fields are applied; everything else is ignored.
+      properties:
+        phone:
+          type: string
+        email:
+          type: string
+          format: email
+        address:
+          type: string
+      additionalProperties: false
+
+    Slot:
+      type: object
+      required: [id, doctorId, start, free]
+      properties:
+        id:
+          type: string
+          example: s-123
+        doctorId:
+          type: string
+          example: d-42
+        start:
+          type: string
+          format: date-time
+          example: '2026-11-20T09:30:00.000Z'
+        end:
+          type: string
+          format: date-time
+        free:
+          type: boolean
+        emergency:
+          type: boolean
+          description: Eligible for automatic allocation when `type` is `URGENCE`.
+      additionalProperties: true
+
+    AppointmentCreate:
+      type: object
+      required: [patientId]
+      properties:
+        patientId:
+          type: string
+          example: p-001
+        slotId:
+          type: string
+          description: Required for `STANDARD`; ignored for `URGENCE`.
+        reason:
+          type: string
+          example: Annual check-up
+        type:
+          type: string
+          enum: [STANDARD, URGENCE]
+          default: STANDARD
+
+    Appointment:
+      type: object
+      required: [id, patientId, slotId, doctorId, start, type, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        patientId:
+          type: string
+        slotId:
+          type: string
+        doctorId:
+          type: string
+        start:
+          type: string
+          format: date-time
+        type:
+          type: string
+          enum: [STANDARD, URGENCE]
+        reason:
+          type: string
+        status:
+          type: string
+          example: CONFIRMED
+
+    Prescription:
+      type: object
+      required: [patientId]
+      description: |
+        Shape is defined by the in-memory dataset in `rest-portal/src/data.js`;
+        only `patientId` is relied on by the API.
+      properties:
+        id:
+          type: string
+        patientId:
+          type: string
+        doctorId:
+          type: string
+        medication:
+          type: string
+        dosage:
+          type: string
+        instructions:
+          type: string
+        issuedAt:
+          type: string
+          format: date-time
+      additionalProperties: true
+
+    AmbulanceDispatchCreate:
+      type: object
+      required: [patientId]
+      properties:
+        patientId:
+          type: string
+          example: p-001
+        location:
+          $ref: '#/components/schemas/Location'
+        priority:
+          type: string
+          enum: [LOW, MEDIUM, HIGH, CRITICAL]
+          default: HIGH
+
+    AmbulanceDispatch:
+      allOf:
+        - $ref: '#/components/schemas/AmbulanceDispatchCreate'
+        - type: object
+          required: [id, status, eta]
+          properties:
+            id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [DISPATCHED, EN_ROUTE, ARRIVED, COMPLETED]
+              example: DISPATCHED
+            eta:
+              type: string
+              description: Free-form ETA label.
+              example: 12 min
+
+    Location:
+      type: object
+      properties:
+        address:
+          type: string
+        latitude:
+          type: number
+        longitude:
+          type: number
+      additionalProperties: true
